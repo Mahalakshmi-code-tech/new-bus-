@@ -1,0 +1,113 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // =========================================================================
+    // SmartBus Least-Privilege Role-Based Security Rules
+    // Protects transit telemetry, commuter accounts, incident dispatch, and routes.
+    // =========================================================================
+
+    // Authentication & Role Helper Functions
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    function isAdmin() {
+      return isAuthenticated() && (
+        request.auth.token.role == 'admin' ||
+        request.auth.token.email.matches('.*@smartbus\\.city$')
+      );
+    }
+
+    function isCommuter() {
+      return isAuthenticated() && request.auth.token.role == 'user';
+    }
+
+    // Input Validation Helpers
+    function isValidIncident() {
+      let data = request.resource.data;
+      return data.keys().hasAll(['issueType', 'description', 'reportedBy']) &&
+             data.issueType is string && data.issueType.size() <= 60 &&
+             data.description is string && data.description.size() <= 1000 &&
+             data.reportedBy is string && data.reportedBy.size() <= 100;
+    }
+
+    // -------------------------------------------------------------------------
+    // 1. User Profiles & Commuter Data Isolation
+    // -------------------------------------------------------------------------
+    match /users/{userId} {
+      // Commuters can only read and update their own profile; admins have read access
+      allow read: if isOwner(userId) || isAdmin();
+      allow write: if isOwner(userId);
+
+      // Private nested favorites sub-collection
+      match /favorites/{docId} {
+        allow read, write: if isOwner(userId);
+      }
+
+      // Private digital passes
+      match /passes/{passId} {
+        allow read: if isOwner(userId) || isAdmin();
+        allow write: if isAdmin(); // Passes issued/modified only by admin/ticketing
+      }
+    }
+
+    // -------------------------------------------------------------------------
+    // 2. Public Transit Telemetry (Routes, Buses, Stops)
+    // -------------------------------------------------------------------------
+    match /routes/{routeId} {
+      // Publicly readable for all passengers and search engines
+      allow read: if true;
+      // Modifiable exclusively by authorized Dispatch / Admin personnel
+      allow write: if isAdmin();
+    }
+
+    match /buses/{busId} {
+      // Live GPS telemetry & occupancy is publicly readable
+      allow read: if true;
+      // Fleet status, route assignment, and maintenance update restricted to Admin
+      allow write: if isAdmin();
+    }
+
+    match /stops/{stopId} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
+    // -------------------------------------------------------------------------
+    // 3. Incident Reports & Commuter Support Tickets
+    // -------------------------------------------------------------------------
+    match /incidents/{incidentId} {
+      // Commuters can view incidents; Admin can view all
+      allow read: if isAuthenticated();
+      // Any authenticated user or anonymous passenger can log a validated incident
+      allow create: if isValidIncident();
+      // Only Dispatch / Admin can update incident status (e.g. 'Under Investigation', 'Resolved') or delete
+      allow update, delete: if isAdmin();
+    }
+
+    // -------------------------------------------------------------------------
+    // 4. System Notifications & Dispatch Alerts
+    // -------------------------------------------------------------------------
+    match /notifications/{notifId} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
+    // -------------------------------------------------------------------------
+    // 5. System Audit Logs (Admin & Monitoring Only)
+    // -------------------------------------------------------------------------
+    match /systemLogs/{logId} {
+      allow read, write: if isAdmin();
+    }
+
+    // Default Deny All other paths
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

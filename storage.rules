@@ -1,0 +1,41 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+
+    // Helper functions
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isAdmin() {
+      return isAuthenticated() && (
+        request.auth.token.role == 'admin' ||
+        request.auth.token.email.matches('.*@smartbus\\.city$')
+      );
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    // Commuter Incident Media Attachments (Photos, evidence)
+    match /incidents/{userId}/{fileName} {
+      allow read: if isAuthenticated();
+      allow write: if isOwner(userId)
+                   && request.resource.size < 5 * 1024 * 1024 // 5MB max
+                   && request.resource.contentType.matches('image/(jpeg|png|webp)')
+                   || request.resource.contentType == 'application/pdf';
+    }
+
+    // Public Static Fleet Assets (bus icons, maps, system branding)
+    match /public/{allPaths=**} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
+    // Default deny
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}
